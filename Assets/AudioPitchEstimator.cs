@@ -23,7 +23,7 @@ public class AudioPitchEstimator : MonoBehaviour
     public float smoothingWidth = 500;
 
     [Tooltip("Threshold to judge silence or not\nLarger the value, stricter the judgment.")]
-    public float thresholdSRH = 7;
+    public float thresholdSRH = 0.05f;
 
     const int spectrumSize = 1024;
     const int outputResolution = 200; // frequency axis resolution (decreasing this will reduce the calculation load)
@@ -32,8 +32,15 @@ public class AudioPitchEstimator : MonoBehaviour
     float[] specCum = new float[spectrumSize];
     float[] specRes = new float[spectrumSize];
     float[] srh = new float[outputResolution];
+    public float[] noise_spec = new float[spectrumSize];
 
     public List<float> SRH => new List<float>(srh);
+    public List<float> Spec => new List<float>(spectrum);
+
+    public float threshold = 0.1f;
+
+    public Vector3[] noise_lines = new Vector3[1024];
+    public Vector3[] denoised_lines = new Vector3[1024];
 
     /// <summary>
     /// Estimates the fundamental frequency
@@ -44,26 +51,39 @@ public class AudioPitchEstimator : MonoBehaviour
     {
         var nyquistFreq = AudioSettings.outputSampleRate / 2.0f;
 
-        // オーディオスペクトルを取得
+        // オーディオスペクトルを取得 // Get the audio spectrum
         if (!audioSource.isPlaying) return float.NaN;
         audioSource.GetSpectrumData(spectrum, 0, FFTWindow.Hanning);
 
-        // 振幅スペクトルの対数を計算
+        // Get audio noise
+        for (int i = 0; i < spectrumSize; i++)
+        {
+            noise_lines[i] = new Vector3(0.2f * Mathf.Log((float)i)-19f, 
+                    0.02f * (Mathf.Log(noise_spec[i] + 1e-5f) + 60f), -0.1f);
+
+            denoised_lines[i] = new Vector3(0.2f * Mathf.Log((float)i)-19f, 
+                    0.02f * (Mathf.Log(spectrum[i] + 1e-5f) - Mathf.Log(noise_spec[i] + 1e-9f) + 30f), -0.1f);
+        }
+
+        // 振幅スペクトルの対数を計算 // Calculate the logarithm of the magnitude spectrum
         // 以降のスペクトルはすべて対数振幅で扱う（ここは元論文と異なる）
+        // All subsequent spectra are treated as logarithmic amplitudes (this differs from the original paper)
         for (int i = 0; i < spectrumSize; i++)
         {
             // 振幅ゼロのとき-∞になってしまうので小さな値を足しておく
-            specRaw[i] = Mathf.Log(spectrum[i] + 1e-9f);
+            // When the amplitude is zero, it becomes -∞ (= log 0), so add a small value.
+            //specRaw[i] = Mathf.Log(spectrum[i]+ 1e-9f);
+            specRaw[i] = 1 * (Mathf.Log(spectrum[i]+ 1e-9f) - Mathf.Log(noise_spec[i] + 1e-9f));
         }
 
-        // スペクトルの累積和（あとで使う）
+        // スペクトルの累積和（あとで使う）// Cumulative sum of spectra (for later use)
         specCum[0] = 0;
         for (int i = 1; i < spectrumSize; i++)
         {
             specCum[i] = specCum[i - 1] + specRaw[i];
         }
 
-        // 残差スペクトルを計算
+        // 残差スペクトルを計算 // Calculate the residual spectrum
         var halfRange = Mathf.RoundToInt((smoothingWidth / 2) / nyquistFreq * spectrumSize);
         for (int i = 0; i < spectrumSize; i++)
         {
@@ -120,4 +140,23 @@ public class AudioPitchEstimator : MonoBehaviour
         return (1 - delta) * spec[index0] + delta * spec[index1];
     }
 
+    void OnDrawGizmos()
+    {
+        if (noise_lines.Length > 0)
+        {
+            for (int i = 1; i < noise_lines.Length; i++)
+            {
+                Gizmos.color = Color.white;
+                Gizmos.DrawLine(noise_lines[i - 1], noise_lines[i]);
+            }
+        }
+        if (denoised_lines.Length > 0)
+        {
+            for (int i = 1; i < denoised_lines.Length; i++)
+            {
+                Gizmos.color = Color.white;
+                Gizmos.DrawLine(denoised_lines[i - 1], denoised_lines[i]);
+            }
+        }         
+    }
 }
